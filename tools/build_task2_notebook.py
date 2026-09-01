@@ -76,8 +76,7 @@ several APIs that older `peft` and `trl` releases assume. A silent version misma
 fails *after* the 7.6 GB model download, which is the expensive way to find out.
 """),
     code("""
-%pip install -q -U "peft>=0.14" "trl>=0.13" "bitsandbytes>=0.45" "accelerate>=1.2" \\
-                  "datasets>=3.2" "evaluate" "rouge-score" "bert-score" "sentencepiece"
+%pip install -q -U "peft>=0.14" "trl>=0.13" "bitsandbytes>=0.45" "accelerate>=1.2" "datasets>=3.2" "evaluate" "rouge-score" "bert-score" "sentencepiece"
 print("\\nRestart is not required; the imports below verify what actually resolved.")
 """),
     code("""
@@ -157,7 +156,7 @@ that produced the training data, which the brief requires.
 from transformers import AutoTokenizer
 
 BASE_MODEL = "microsoft/Phi-3-mini-4k-instruct"
-tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL, trust_remote_code=True)
+tokenizer = AutoTokenizer.from_pretrained(BASE_MODEL)
 tokenizer.pad_token = tokenizer.pad_token or tokenizer.eos_token
 tokenizer.padding_side = "right"   # left padding is for generation, not for loss
 
@@ -216,15 +215,18 @@ bnb_config = BitsAndBytesConfig(
     bnb_4bit_use_double_quant=True,
 )
 
+# No trust_remote_code. Transformers has had native Phi-3 support since 4.41, and the
+# Hub's modeling_phi3.py is stale against transformers 5.x: it reads
+# config.rope_scaling["type"] where the modern config uses "rope_type", which raises
+# KeyError: 'type' during rope init. Loading remote code also silently overrides a
+# working built-in implementation with an older one.
 model = AutoModelForCausalLM.from_pretrained(
     BASE_MODEL,
     quantization_config=bnb_config,
     device_map={"": 0},
-    trust_remote_code=True,
-    attn_implementation="eager",   # Phi-3 + flash-attn is not available on T4
+    attn_implementation="eager",   # flash-attn is not available on a T4
 )
 model.config.use_cache = False          # incompatible with gradient checkpointing
-model.config.pretraining_tp = 1
 
 print(f"loaded in {model.dtype}, {model.num_parameters()/1e9:.2f}B params")
 print(f"GPU memory allocated: {torch.cuda.memory_allocated()/1e9:.2f} GB")
@@ -404,7 +406,7 @@ print(f"GPU freed, now {torch.cuda.memory_allocated()/1e9:.2f} GB allocated")
 from peft import PeftModel
 
 base = AutoModelForCausalLM.from_pretrained(
-    BASE_MODEL, torch_dtype=torch.float16, device_map={"": 0}, trust_remote_code=True,
+    BASE_MODEL, torch_dtype=torch.float16, device_map={"": 0},
 )
 merged = PeftModel.from_pretrained(base, adapter_dir)
 merged = merged.merge_and_unload()
@@ -467,7 +469,7 @@ del merged; gc.collect(); torch.cuda.empty_cache()
 """),
     code("""
 base_model = AutoModelForCausalLM.from_pretrained(
-    BASE_MODEL, quantization_config=bnb_config, device_map={"": 0}, trust_remote_code=True,
+    BASE_MODEL, quantization_config=bnb_config, device_map={"": 0},
     attn_implementation="eager",
 )
 base_outputs = generate_all(base_model, test_rows, BASELINE_SYSTEM_PROMPT, "base")
@@ -688,7 +690,7 @@ def perplexity(model_obj, text):
 
 # Reload the merged model for the demonstration.
 merged = AutoModelForCausalLM.from_pretrained(
-    MERGED_DIR, torch_dtype=torch.float16, device_map={"": 0}, trust_remote_code=True)
+    MERGED_DIR, torch_dtype=torch.float16, device_map={"": 0})
 
 PPL_THRESHOLD = 3.0
 worst = max(range(len(ft_outputs)), key=lambda i: perplexity(merged, ft_outputs[i]))
