@@ -1,0 +1,185 @@
+{
+  "examples": 120,
+  "passage_length_words": {
+    "count": 120,
+    "mean": 153.7,
+    "std": 30.6,
+    "min": 70,
+    "p25": 137,
+    "median": 151,
+    "p75": 169,
+    "max": 246
+  },
+  "pairwise_similarity": {
+    "pairs_compared": 7140,
+    "mean": 0.0001,
+    "median": 0.0,
+    "p95": 0.0,
+    "max": 0.0181,
+    "above_0.30": 0,
+    "above_0.45": 0
+  },
+  "vocabulary": {
+    "total_tokens": 11320,
+    "unique_tokens": 3261,
+    "type_token_ratio": 0.2881,
+    "hapax_legomena": 1563,
+    "top_terms": [
+      [
+        "million",
+        116
+      ],
+      [
+        "year",
+        94
+      ],
+      [
+        "approximately",
+        81
+      ],
+      [
+        "two",
+        79
+      ],
+      [
+        "revenue",
+        61
+      ],
+      [
+        "quarter",
+        59
+      ],
+      [
+        "percent",
+        49
+      ],
+      [
+        "customer",
+        48
+      ],
+      [
+        "single",
+        47
+      ],
+      [
+        "management",
+        44
+      ],
+      [
+        "months",
+        39
+      ],
+      [
+        "roughly",
+        39
+      ],
+      [
+        "through",
+        36
+      ],
+      [
+        "costs",
+        35
+      ],
+      [
+        "three",
+        34
+      ],
+      [
+        "fiscal",
+        33
+      ],
+      [
+        "next",
+        33
+      ],
+      [
+        "data",
+        33
+      ],
+      [
+        "capital",
+        32
+      ],
+      [
+        "material",
+        32
+      ],
+      [
+        "per",
+        32
+      ],
+      [
+        "second",
+        30
+      ],
+      [
+        "customers",
+        30
+      ],
+      [
+        "usd",
+        30
+      ],
+      [
+        "production",
+        28
+      ]
+    ]
+  },
+  "risk_categories": {
+    "total_risk_items": 289,
+    "categories_present": 12,
+    "categories_missing": [],
+    "distribution": {
+      "concentration_risk": 40,
+      "operational_risk": 39,
+      "regulatory_risk": 36,
+      "market_risk": 35,
+      "supply_chain_risk": 34,
+      "litigation_risk": 22,
+      "credit_risk": 17,
+      "geopolitical_risk": 15,
+      "cybersecurity_risk": 15,
+      "technology_risk": 14,
+      "environmental_risk": 11,
+      "liquidity_risk": 11
+    },
+    "share_of_largest": 0.1384,
+    "risks_per_example": {
+      "1": 26,
+      "2": 34,
+      "3": 45,
+      "4": 15
+    },
+    "mean_risks_per_example": 2.41
+  },
+  "coverage": {
+    "sectors": {
+      "semiconductor manufacturing": 8,
+      "regional banking": 8,
+      "pharmaceuticals": 8,
+      "oil and gas exploration": 8,
+      "specialty retail": 8,
+      "third-party logistics": 8,
+      "property and casualty insurance": 8,
+      "commercial REIT": 8,
+      "regional airline": 8,
+      "copper mining": 8,
+      "telecommunications": 8,
+      "agricultural processing": 8,
+      "automotive components": 8,
+      "enterprise software": 8,
+      "regulated water utility": 8
+    },
+    "doc_styles": {
+      "10k_risk_factors": 32,
+      "mdna": 32,
+      "earnings_call": 28,
+      "bond_prospectus": 28
+    },
+    "teacher_providers": {
+      "openrouter": 120
+    }
+  }
+}
