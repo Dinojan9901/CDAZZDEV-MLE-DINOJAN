@@ -1,0 +1,25 @@
+# Local environment for Task 1 and Task 3. Task 2 runs on Colab, see task2_genai/requirements-colab.txt
+
+pandas>=2.0,<3.0
+numpy>=1.24,<2.1
+yfinance>=0.2.40
+requests>=2.31
+python-dotenv>=1.0
+pydantic>=2.6,<3.0
+tenacity>=8.2
+
+groq>=0.11.0
+openai>=1.40.0
+
+matplotlib>=3.7
+jinja2>=3.1
+markdown>=3.5
+
+langchain>=0.3.0
+langchain-core>=0.3.0
+langchain-groq>=0.2.0
+langgraph>=0.2.0
+ddgs>=6.0
+
+notebook>=7.0
+ipykernel>=6.29

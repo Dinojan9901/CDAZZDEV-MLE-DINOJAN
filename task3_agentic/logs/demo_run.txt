@@ -1,0 +1,7 @@
+ERROR common.llm: repair pass failed for ResearchReport: 2 validation errors for ResearchReport
+top_risks
+  List should have at least 3 items after validation, not 2 [type=too_short, input_value=[{'risk': 'Supply‑chain...nately affect Nvidia.'}], input_type=list]
+    For further information visit https://errors.pydantic.dev/2.13/v/too_short
+hedge_strategy
+  Field required [type=missing, input_value={'ticker': 'NVDA', 'finan...ately affect Nvidia.'}]}, input_type=dict]
+    For further information visit https://errors.pydantic.dev/2.13/v/missing

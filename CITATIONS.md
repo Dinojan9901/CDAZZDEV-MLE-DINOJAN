@@ -1,0 +1,63 @@
+# Citations
+
+Per Section 2.2 of the assessment brief, this file records every use of AI assistance and every piece of adapted third-party code.
+
+## AI assistance
+
+Development of this repository was assisted by Claude (model `claude-opus-5`) running inside Claude Code, used for scaffolding, code generation, and documentation drafting. All architectural decisions, the choice of domain for Task 2, provider selection, evaluation design, and every hyperparameter justification are my own, and I can defend each of them.
+
+Per-file citations appear as inline comments in the form required by the brief. The table below indexes them.
+
+| Date | Component | Model | Prompt summary |
+|---|---|---|---|
+| 2026-09-01 | Repository scaffold, `common/config.py`, `common/llm.py`, `common/schemas.py` | claude-opus-5 | "Scaffold the assessment repo: folder structure, gitignore, env handling, a Groq-primary LLM client with OpenRouter fallback, and shared Pydantic schemas" |
+| 2026-09-01 | `task1_financial/src/indicators.py` | claude-opus-5 | "Implement SMA, Wilder RSI, MACD and Bollinger Bands from first principles in pandas without TA-Lib" |
+| 2026-09-01 | `task1_financial/src/data.py` | claude-opus-5 | "yfinance OHLCV fetch with a warm-up buffer for SMA200, relative dates only, split-adjusted, with retry and null handling" |
+| 2026-09-01 | `task1_financial/src/news.py` | claude-opus-5 | "Headline retrieval across yfinance, Yahoo RSS and Google News RSS with dedupe and on-topic relevance ranking" |
+| 2026-09-01 | `task1_financial/src/summary.py` | claude-opus-5 | "Summary dictionary plus a deterministic rule-based momentum signal derived from the computed indicators" |
+| 2026-09-01 | `task1_financial/tests/` | claude-opus-5 | "Verify RSI against Wilder's published worked example, and offline tests for the headline ranking logic" |
+| 2026-09-01 | `task1_financial/src/prompts.py` | claude-opus-5 | "Write system and user prompt templates for per-headline sentiment and for a Buy/Hold/Sell call that reasons over indicator interactions rather than restating values" |
+| 2026-09-01 | `task1_financial/src/analysis.py` | claude-opus-5 | "Per-headline sentiment classification with Pydantic validation, confidence-weighted aggregation, and signal generation with graceful degradation" |
+| 2026-09-01 | `task1_financial/tests/test_analysis.py` | claude-opus-5 | "Test Task 1B against a scripted mock client covering validation failures, transport errors and prompt role separation" |
+| 2026-09-01 | `task1_financial/src/charts.py` | claude-opus-5 | "Three-panel matplotlib chart, price with SMA and Bollinger bands over RSI and MACD, with collision-aware direct labels" |
+| 2026-09-01 | `task1_financial/src/report.py` | claude-opus-5 | "Render the equity research brief to Markdown and to a self-contained styled HTML page with the chart embedded as a data URI" |
+| 2026-09-01 | `task1_financial/src/pipeline.py` | claude-opus-5 | "CLI entry point wiring the 1A data pipeline, the 1B LLM stage and report rendering together" |
+| 2026-09-01 | `task1_financial/tests/test_report.py` | claude-opus-5 | "Offline tests for brief completeness, the mandatory disclaimer, degraded-run rendering and HTML self-containment" |
+| 2026-09-01 | `task3_agentic/src/trace.py` | claude-opus-5 | "Structured JSONL tool tracing with per-call duration, 200-char output truncation and agent attribution via ContextVar" |
+| 2026-09-01 | `task3_agentic/src/tools.py` | claude-opus-5 | "Five agent tools wrapping the Task 1 pipeline, returning handled failures rather than raising so the agent can replan" |
+| 2026-09-01 | `task3_agentic/src/schemas.py` | claude-opus-5 | "Pydantic contracts for the agent-to-agent handoff, clarification exchange and the three-section research report" |
+| 2026-09-01 | `task3_agentic/src/memory.py` | claude-opus-5 | "Session memory plus a persistent brief cache keyed by ticker and date with version rejection" |
+| 2026-09-01 | `task3_agentic/src/prompts.py` | claude-opus-5 | "System prompts for the single agent and for the restricted data-analyst and research-writer roles" |
+| 2026-09-01 | `task3_agentic/src/agent.py` | claude-opus-5 | "Explicit ReAct loop with autonomous tool selection, budget-aware planning and recovery from provider rejections" |
+| 2026-09-01 | `task3_agentic/src/multi_agent.py` | claude-opus-5 | "Two-agent pipeline with structurally enforced tool restriction, typed handoff and a one-round critique loop" |
+| 2026-09-01 | `task3_agentic/tests/test_agentic.py` | claude-opus-5 | "Offline tests for tracing, memory, cache keying, tool restriction and agent error recovery using a scripted fake LLM" |
+
+Rows are added below as each task is implemented.
+
+<!-- TEMPLATE, copy for each new AI-assisted component:
+| YYYY-MM-DD | path/to/file.py | claude-opus-5 | "the prompt you gave" |
+-->
+
+## Design references
+
+The chart palette is the validated categorical set from the Claude Code `dataviz` skill reference palette, checked with its `validate_palette.js` for colourblind separation and surface contrast before use. Slot assignments: blue `#2a78d6` close, orange `#eb6834` SMA50, aqua `#1baf7a` SMA200, violet `#4a3aa7` MACD.
+
+## Adapted open-source code
+
+None yet. Any adapted source will be recorded here and as an inline comment in the form:
+
+```python
+# SOURCE: Adapted from https://github.com/example/repo, file: trainer.py, Lines 45-82
+```
+
+## Teacher model prompt (Task 2)
+
+The complete system prompt used for synthetic training data generation is stored verbatim at
+[task2_genai/prompts/teacher_system_prompt.md](task2_genai/prompts/teacher_system_prompt.md) and reproduced in the Task 2 notebook.
+
+## Data sources
+
+| Source | Use | Licence / terms |
+|---|---|---|
+| Yahoo Finance via `yfinance` | OHLCV price history and news headlines | Free, personal use |
+| DuckDuckGo via `ddgs` | Agent web search tool in Task 3 | Free, no key required |
