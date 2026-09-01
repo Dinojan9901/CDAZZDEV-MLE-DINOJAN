@@ -4,11 +4,23 @@ Submission for the Ceylon Dazzling Dev Holding (Pvt.) Ltd. Senior Machine Learni
 
 All three tasks are attempted.
 
-| Task | Domain | Deliverable | Folder | Status |
+| Task | Domain | Deliverable | Folder | Notebook |
 |---|---|---|---|---|
-| 1 | Financial AI | LLM-powered equity research assistant | [task1_financial/](task1_financial/) | in progress |
-| 2 | Generative AI | QLoRA fine-tuning pipeline, financial risk clause extraction | [task2_genai/](task2_genai/) | in progress |
-| 3 | Agentic Workflows | Multi-agent research system with memory and tracing | [task3_agentic/](task3_agentic/) | in progress |
+| 1 | Financial AI | LLM-powered equity research assistant | [task1_financial/](task1_financial/) | [notebook](task1_financial/notebook.ipynb) |
+| 2 | Generative AI | QLoRA fine-tuning, financial risk clause extraction | [task2_genai/](task2_genai/) | in progress |
+| 3 | Agentic Workflows | Multi-agent research system with memory and tracing | [task3_agentic/](task3_agentic/) | [notebook](task3_agentic/notebook.ipynb) |
+
+## Tests
+
+All tests run offline with no API key and no network access.
+
+```powershell
+python -m task1_financial.tests.test_indicators   # verified against Wilder's published RSI figures
+python -m task1_financial.tests.test_news
+python -m task1_financial.tests.test_analysis
+python -m task1_financial.tests.test_report
+python -m task3_agentic.tests.test_agentic
+```
 
 ## Repository layout
 

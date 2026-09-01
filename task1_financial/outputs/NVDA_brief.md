@@ -1,17 +1,17 @@
 # NVIDIA Corporation (NVDA)
 
-Equity research brief, data as of 2026-09-01. Generated 01 September 2026 at 22:30.
+Equity research brief, data as of 2026-09-01. Generated 02 September 2026 at 01:39.
 
 ## Company snapshot
 
 | Metric | Value |
 | --- | --- |
-| Current price | 219.53 USD |
+| Current price | 217.44 USD |
 | 52-week range | 164.98 to 235.47 |
-| Position in range | 77% of the 52-week range |
-| P/E ratio | 27.79 |
-| Market cap | 5.30T |
-| Year to date return | 16.39% |
+| Position in range | 74% of the 52-week range |
+| P/E ratio | 27.45 |
+| Market cap | 5.25T |
+| Year to date return | 15.28% |
 | Sector | Technology |
 | Bars analysed | 501 since 2024-09-03 |
 
@@ -19,16 +19,16 @@ Equity research brief, data as of 2026-09-01. Generated 01 September 2026 at 22:
 
 | Indicator | Value |
 | --- | --- |
-| SMA 50 | 208.84 |
-| SMA 200 | 195.93 |
-| RSI 14 | 53.52 |
-| MACD line | 2.455 |
-| MACD signal | 2.704 |
-| MACD histogram | -0.249 |
-| Bollinger upper | 229.27 |
-| Bollinger mid | 219.13 |
-| Bollinger lower | 209.00 |
-| Percent B | 0.519 |
+| SMA 50 | 208.80 |
+| SMA 200 | 195.92 |
+| RSI 14 | 51.87 |
+| MACD line | 2.289 |
+| MACD signal | 2.671 |
+| MACD histogram | -0.382 |
+| Bollinger upper | 229.19 |
+| Bollinger mid | 219.03 |
+| Bollinger lower | 208.87 |
+| Percent B | 0.422 |
 
 **Rule-based momentum reading: Bullish** (score 0.25 on a scale of -1 to 1).
 
@@ -38,31 +38,31 @@ Flags: golden_cross.
 
 ## News sentiment
 
-Aggregate sentiment is **positive** at a confidence-weighted score of 0.644 on a scale of -1 to 1, across 10 classified headlines (6 positive, 1 negative, 3 neutral) with a mean confidence of 0.71.
+Aggregate sentiment is **positive** at a confidence-weighted score of 0.333 on a scale of -1 to 1, across 10 classified headlines (4 positive, 2 negative, 4 neutral) with a mean confidence of 0.66.
 
 ### Top three headlines
 
-1. **Nvidia: AI Boom Times Still Ahead - Seeking Alpha**  
-   *positive, confidence 0.92*. The forward-looking optimism about sustained AI demand signals higher future revenue for Nvidia.
+1. **5-Star Analyst Drops Massive Nvidia Stock Price Target**  
+   *negative, confidence 0.92*. Analyst lowered target price, indicating a negative outlook for the company.
 
-2. **CrowdStrike Launches Frontier Models for Cybersecurity, Created with NVIDIA**  
-   *positive, confidence 0.89*. The partnership highlights new demand for NVIDIA's AI hardware, indicating a revenue boost.
+2. **SpaceX Picks Nvidia Chips for Orbital AI. What It Means for NVDA Stock**  
+   *positive, confidence 0.92*. SpaceX's adoption of Nvidia chips signals new revenue and market expansion for the company.
 
-3. **Wall Street Sees Nvidia Stock Hitting $324. Here’s Why NVDA Could Go Even Higher. - Barchart.com**  
-   *positive, confidence 0.89*. Analysts' bullish expectations imply further upside for the stock.
+3. **Nvidia: Stock Price To Catch Up To Earnings Growth (NASDAQ:NVDA) - Seeking Alpha**  
+   *positive, confidence 0.92*. The headline predicts a future rise in NVDA's share price as it aligns with earnings growth.
 
 ## Recommendation
 
 ### Hold
 
-The price remains comfortably above both the 50-day and 200-day SMAs, confirming a longer-term uptrend, yet the MACD line sitting below its signal and a negative histogram indicate a short-term loss of momentum that conflicts with the bullish trend. RSI is near the midpoint, suggesting neither overbought nor oversold conditions, while the price sits around the middle of the Bollinger band, leaving limited immediate upside or downside pressure. Positive news sentiment reinforces the bullish narrative, but it is outweighed by the bearish MACD divergence, leading to a neutral stance. Consequently, the mixed signals merit a Hold rather than a decisive Buy or Sell.
+The price remains above both the 50-day and 200-day SMAs, confirming a longer-term uptrend, but the MACD line sitting below its signal and a negative histogram signal weakening momentum that could lead to a short-term pullback. RSI is near the midpoint, indicating no overbought pressure, while the price sits in the lower half of the Bollinger band, suggesting room for a modest rebound rather than a breakout. Positive news sentiment supports the trend but is not strong enough to outweigh the mixed technical signals, so a cautious stance is warranted.
 
 **Key drivers**
 
 - SMA50>SMA200 uptrend
 - MACD bearish divergence
-- RSI near 50
-- Mid-band Bollinger position
+- Price near lower Bollinger band
+- Neutral RSI
 - Positive news sentiment
 
 ## Risk disclaimer

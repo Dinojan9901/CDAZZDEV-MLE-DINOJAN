@@ -1,5 +1,7 @@
 # Task 2, Generative AI
 
+[![Open In Colab](https://colab.research.google.com/assets/colab-badge.svg)](https://colab.research.google.com/github/Dinojan9901/CDAZZDEV-MLE-DINOJAN/blob/main/task2_genai/notebook.ipynb)
+
 QLoRA fine-tuning pipeline for financial risk clause extraction. 100 points plus 5 bonus.
 
 ## Use case
