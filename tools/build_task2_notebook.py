@@ -91,7 +91,11 @@ print(f"datasets     {datasets.__version__}")
 if torch.cuda.is_available():
     p = torch.cuda.get_device_properties(0)
     print(f"\\nGPU: {p.name}, {p.total_memory/1e9:.1f} GB, capability {p.major}.{p.minor}")
-    print(f"bf16 supported: {torch.cuda.is_bf16_supported()}  (T4 is fp16 only)")
+    # torch reports True on Turing because it permits emulated bf16, but the T4 is
+    # SM75 with no native bf16 tensor cores, so fp16 is the faster choice regardless.
+    native_bf16 = p.major >= 8
+    print(f"bf16 reported: {torch.cuda.is_bf16_supported()}, native bf16 tensor cores: {native_bf16}")
+    print("using fp16" if not native_bf16 else "bf16 would be preferred here")
 """),
     code("""
 from google.colab import userdata
@@ -269,15 +273,15 @@ print(f"trainable params: {trainable:,} of {total:,}  ({100*trainable/total:.3f}
 | `bias` | `none` | Training biases adds parameters that cannot be merged cleanly and gives no measurable benefit at this scale. |
 | `learning_rate` | 2e-4 | Roughly 10x a full fine-tune's 2e-5. Only the adapters update, and they start from zero, so they need a far larger step to move at all. Below about 1e-4 the JSON format does not stabilise within 3 epochs. |
 | `lr_scheduler_type` | `cosine` | A constant rate leaves the model taking large steps at the end of training, which shows up as JSON format drift in the final checkpoint. Cosine decay anneals to near zero and stabilises the output shape. |
-| `warmup_ratio` | 0.03 | 4-bit weights make the first few steps noisy. A short warmup avoids an early spike without spending meaningful budget on it. |
+| `warmup_steps` | ~6 (8 percent of total) | 4-bit weights make the first optimiser steps noisy, and going straight to 2e-4 risks an early loss spike the run never recovers from. Expressed in steps rather than a ratio because trl 1.12 does not accept `warmup_ratio`, and because at 72 total steps a 0.03 ratio rounds to a single step, which is no warmup at all. |
 | `num_train_epochs` | 3 | 1 epoch learns the JSON shape but not the taxonomy. Beyond 3, validation loss starts rising on 96 examples. 3 is the point the val curve below justifies. |
 | `per_device_train_batch_size` | 1 | Phi-3-mini in 4-bit plus activations at 1024 tokens is what a 15 GB T4 holds. 2 fits only by cutting sequence length, which would truncate examples. |
-| `gradient_accumulation_steps` | 8 | Effective batch of 8. Batch size 1 gives extremely noisy gradients; accumulation recovers a usable batch without the memory of a real one. |
-| `max_seq_length` | 1024 | Set from the measured token distribution above, with headroom over p95. Truncation would teach the model to emit incomplete JSON. |
+| `gradient_accumulation_steps` | 4 | Effective batch of 4. Batch size 1 gives extremely noisy gradients and accumulation recovers a usable batch without the memory cost of a real one. Set to 4 rather than 8 because 96 examples at effective batch 8 gives only 12 optimiser steps per epoch, 36 across the run, which is too few for adapters starting from zero to learn a 12-way taxonomy plus a rigid output shape. At 4 it is 24 per epoch, 72 total. |
+| `max_length` | 1024 | Named `max_seq_length` in older trl. Set from the measured token distribution above, with headroom over p95. Truncation would teach the model to emit incomplete JSON. |
 | `optim` | `paged_adamw_8bit` | 8-bit states cut optimiser memory roughly fourfold. Paged means optimiser state spills to host RAM on a spike instead of raising OOM, which matters on a shared T4. |
 | `fp16` | `True` | The T4 is Turing and has no bf16 units. On Ampere or newer, bf16 would be preferred for its wider exponent range. |
 | `gradient_checkpointing` | `True` | Recomputes activations in the backward pass. Costs roughly 30 percent more time and is the single reason this fits at all. |
-| `eval_strategy` | `epoch` | The brief requires validation loss per epoch, and per-epoch evaluation on 12 examples is cheap. |
+| `eval_strategy` | `epoch` | Named `evaluation_strategy` in older transformers. The brief requires validation loss per epoch, and per-epoch evaluation on 12 examples is cheap. |
 """),
     code("""
 from datasets import Dataset
@@ -292,40 +296,70 @@ train_ds, val_ds = to_text(splits["train"]), to_text(splits["val"])
 print(train_ds, val_ds, sep="\\n")
 """),
     code("""
+import dataclasses, inspect, math, trl
 from trl import SFTConfig, SFTTrainer
 
-sft_config = SFTConfig(
-    output_dir="/content/drive/MyDrive/cdazzdev_task2_out"
-               if Path("/content/drive").exists() else "/content/task2_out",
-    num_train_epochs=3,
-    per_device_train_batch_size=1,
-    per_device_eval_batch_size=1,
-    gradient_accumulation_steps=8,
-    learning_rate=2e-4,
-    lr_scheduler_type="cosine",
-    warmup_ratio=0.03,
-    optim="paged_adamw_8bit",
-    fp16=True,
-    gradient_checkpointing=True,
-    gradient_checkpointing_kwargs={"use_reentrant": False},
-    max_length=MAX_SEQ_LEN,
-    packing=False,                 # packing would blur example boundaries in a JSON task
-    logging_steps=5,
-    eval_strategy="epoch",
-    save_strategy="epoch",
-    save_total_limit=2,
-    report_to="none",
-    seed=42,
-)
+# trl renames these fields between releases. Ask the installed version what it accepts
+# rather than hardcoding names: 1.12 dropped warmup_ratio, max_seq_length and
+# evaluation_strategy in favour of warmup_steps, max_length and eval_strategy.
+try:
+    ACCEPTED = {f.name for f in dataclasses.fields(SFTConfig)}
+except TypeError:
+    ACCEPTED = set(inspect.signature(SFTConfig.__init__).parameters) - {"self", "kwargs"}
 
-trainer = SFTTrainer(
-    model=model,
-    args=sft_config,
-    train_dataset=train_ds,
-    eval_dataset=val_ds,
-    processing_class=tokenizer,
-)
-print("trainer ready")
+OUT_DIR = "/content/task2_out"
+EFFECTIVE_ACCUM = 4
+steps_per_epoch = math.ceil(len(train_ds) / (1 * EFFECTIVE_ACCUM))
+total_steps = steps_per_epoch * 3
+warmup = max(3, round(total_steps * 0.08))
+print(f"{steps_per_epoch} steps/epoch, {total_steps} total, {warmup} warmup")
+
+wanted = {
+    "output_dir": OUT_DIR,
+    "num_train_epochs": 3,
+    "per_device_train_batch_size": 1,
+    "per_device_eval_batch_size": 1,
+    "gradient_accumulation_steps": EFFECTIVE_ACCUM,
+    "learning_rate": 2e-4,
+    "lr_scheduler_type": "cosine",
+    "warmup_ratio": 0.08,
+    "warmup_steps": warmup,
+    "optim": "paged_adamw_8bit",
+    "fp16": True,
+    "gradient_checkpointing": True,
+    "gradient_checkpointing_kwargs": {"use_reentrant": False},
+    "max_length": MAX_SEQ_LEN,
+    "max_seq_length": MAX_SEQ_LEN,
+    "packing": False,
+    "logging_steps": 5,
+    "eval_strategy": "epoch",
+    "evaluation_strategy": "epoch",
+    "save_strategy": "epoch",
+    "save_total_limit": 2,
+    "report_to": "none",
+    "seed": 42,
+}
+for a, b in [("warmup_ratio", "warmup_steps"), ("max_length", "max_seq_length"),
+             ("eval_strategy", "evaluation_strategy")]:
+    if a in ACCEPTED and b in ACCEPTED:
+        wanted.pop(b)
+
+applied = {k: v for k, v in wanted.items() if k in ACCEPTED}
+dropped = sorted(set(wanted) - set(applied))
+print()
+print(f"trl {trl.__version__}: applied {len(applied)} settings")
+if dropped:
+    print(f"not supported by this trl, dropped: {dropped}")
+
+sft_config = SFTConfig(**applied)
+try:
+    trainer = SFTTrainer(model=model, args=sft_config, train_dataset=train_ds,
+                         eval_dataset=val_ds, processing_class=tokenizer)
+except TypeError:
+    trainer = SFTTrainer(model=model, args=sft_config, train_dataset=train_ds,
+                         eval_dataset=val_ds, tokenizer=tokenizer)
+
+print("trainer ready, effective batch size", 1 * EFFECTIVE_ACCUM)
 """),
 
     md("""
@@ -364,23 +398,37 @@ if len(loss_table) > 1:
     code("""
 import matplotlib.pyplot as plt
 
-fig, ax = plt.subplots(figsize=(8, 4.5), facecolor="#fcfcfb")
-ax.set_facecolor("#fcfcfb")
-steps = hist[hist["loss"].notna()]
-ax.plot(steps["epoch"], steps["loss"], color="#2a78d6", linewidth=1.6, label="train (per step)")
-if len(loss_table):
-    ax.plot(loss_table["epoch"], loss_table["val_loss"], color="#eb6834",
-            linewidth=2.2, marker="o", markersize=7, label="validation (per epoch)")
-ax.set_xlabel("epoch", color="#52514e")
-ax.set_ylabel("loss", color="#52514e")
-ax.set_title("QLoRA fine-tuning loss", color="#0b0b0b", fontweight="bold", loc="left")
-ax.grid(True, color="#e5e4e0", linewidth=0.8)
-ax.set_axisbelow(True)
-for s in ("top", "right"):
-    ax.spines[s].set_visible(False)
-ax.legend(frameon=False)
-plt.tight_layout()
-plt.show()
+hist = pd.DataFrame(trainer.state.log_history)
+train_pts = hist.dropna(subset=["loss"]) if "loss" in hist.columns else hist.iloc[0:0]
+eval_pts = hist.dropna(subset=["eval_loss"]) if "eval_loss" in hist.columns else hist.iloc[0:0]
+
+if train_pts.empty and eval_pts.empty:
+    print("No loss history. Run the training cell above before plotting.")
+else:
+    fig, ax = plt.subplots(figsize=(8, 4.5), facecolor="#fcfcfb")
+    ax.set_facecolor("#fcfcfb")
+    if not train_pts.empty:
+        ax.plot(train_pts["epoch"], train_pts["loss"], color="#2a78d6",
+                linewidth=1.6, label="train (per step)")
+    if not eval_pts.empty:
+        ax.plot(eval_pts["epoch"], eval_pts["eval_loss"], color="#eb6834",
+                linewidth=2.2, marker="o", markersize=7, label="validation (per epoch)")
+    ax.set_xlabel("epoch", color="#52514e")
+    ax.set_ylabel("loss", color="#52514e")
+    ax.set_title("QLoRA fine-tuning loss", color="#0b0b0b", fontweight="bold", loc="left")
+    ax.grid(True, color="#e5e4e0", linewidth=0.8)
+    ax.set_axisbelow(True)
+    for side in ("top", "right"):
+        ax.spines[side].set_visible(False)
+    ax.legend(frameon=False)
+    plt.tight_layout()
+    plt.show()
+
+    if not eval_pts.empty:
+        first, last = eval_pts["eval_loss"].iloc[0], eval_pts["eval_loss"].iloc[-1]
+        print(f"validation loss {first:.4f} -> {last:.4f}  "
+              f"({'decreased' if last < first else 'DID NOT DECREASE'})")
+        display(eval_pts[["epoch", "eval_loss"]].round(4))
 """),
 
     md("""
