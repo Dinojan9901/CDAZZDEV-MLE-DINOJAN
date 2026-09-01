@@ -17,7 +17,8 @@ from common.llm import LLMError, SchemaValidationError, get_client
 from task3_agentic.src import prompts, tools as toolkit, trace as tracing
 from task3_agentic.src.agent import ResearchAgent, _shorten
 from task3_agentic.src.schemas import (
-    ClarificationRequest, ClarificationResponse, DataBrief, ResearchReport,
+    BriefNarrative, ClarificationRequest, ClarificationResponse, DataBrief,
+    PriceSnapshot, ResearchReport, SentimentSummary, VolatilityProfile,
 )
 
 AGENT_A = "agent_a_data_analyst"
@@ -83,19 +84,163 @@ class TwoAgentPipeline:
             AGENT_B: sorted(self.agent_b.by_name),
         }
 
-    def _compile_brief(self, ticker: str, run, result: "PipelineResult") -> DataBrief | None:
-        observations = {k: _shorten(v, 900) for k, v in run.memory.observations.items()}
-        user = prompts.AGENT_A_BRIEF_USER.substitute(
-            ticker=ticker, observations=json.dumps(observations, indent=2)[:3000]
+    @staticmethod
+    def _parse_observations(observations: dict) -> tuple[dict, list[str]]:
+        """Pull the figures out of raw tool JSON in Python, not through the model."""
+        parsed, failures = {}, []
+        for name, raw in observations.items():
+            try:
+                payload = json.loads(raw) if isinstance(raw, str) else raw
+            except (json.JSONDecodeError, TypeError):
+                failures.append(f"{name}: output was not valid JSON")
+                continue
+            if not isinstance(payload, dict) or payload.get("ok") is False:
+                reason = payload.get("error", "unknown") if isinstance(payload, dict) else "unknown"
+                failures.append(f"{name}: {reason}")
+                continue
+            parsed[name] = payload
+        return parsed, failures
+
+    @staticmethod
+    def _derive_observations(price, volatility, sentiment) -> list[str]:
+        """Factual observations computed from the figures.
+
+        Used when the model returns none. The handoff should never reach Agent B empty
+        just because a narrative call came back thin, and these statements are checkable
+        against the numbers rather than generated prose.
+        """
+        notes = []
+        if price.current_price and price.sma_50 and price.sma_200:
+            side = "above" if price.current_price > price.sma_50 else "below"
+            cross = "above" if price.sma_50 > price.sma_200 else "below"
+            notes.append(
+                f"Price sits {side} the 50-day SMA, and the 50-day sits {cross} the "
+                f"200-day, a {'golden cross' if cross == 'above' else 'death cross'} structure."
+            )
+        if price.rsi_14 is not None:
+            zone = ("overbought" if price.rsi_14 >= 70 else
+                    "oversold" if price.rsi_14 <= 30 else "neutral")
+            notes.append(f"RSI(14) at {price.rsi_14:.1f} is {zone}.")
+        if price.macd_hist is not None:
+            drift = "negative" if price.macd_hist < 0 else "positive"
+            notes.append(
+                f"The MACD histogram is {drift} at {price.macd_hist:.2f}, so short-term "
+                f"momentum is {'fading against' if price.macd_hist < 0 else 'confirming'} the trend."
+            )
+        if volatility and volatility.annualised_volatility_1y_pct:
+            ratio = volatility.annualised_volatility_pct / volatility.annualised_volatility_1y_pct
+            notes.append(
+                f"{volatility.window_days}-day annualised volatility of "
+                f"{volatility.annualised_volatility_pct:.2f}% is {ratio:.2f}x the one-year "
+                f"figure of {volatility.annualised_volatility_1y_pct:.2f}%, regime "
+                f"{volatility.regime}."
+            )
+        if sentiment:
+            notes.append(
+                f"Headline sentiment is {sentiment.label} at {sentiment.score:+.3f} across "
+                f"{sentiment.classified} classified items "
+                f"({sentiment.positive}/{sentiment.negative}/{sentiment.neutral} pos/neg/neutral)."
+            )
+        if price.current_price and price.week52_high and price.week52_low:
+            span = price.week52_high - price.week52_low
+            if span:
+                pos = (price.current_price - price.week52_low) / span * 100
+                notes.append(f"Price sits at {pos:.0f}% of the 52-week range.")
+        return notes[:6]
+
+    def _compile_brief(self, ticker: str, run, result: "PipelineResult") -> DataBrief:
+        """Assemble the handoff.
+
+        Figures are read straight out of the tool payloads. An earlier version asked the
+        model to transcribe them from truncated JSON and it returned an entirely null
+        brief, which validated cleanly and told Agent B nothing.
+        """
+        parsed, failures = self._parse_observations(run.memory.observations)
+
+        price_payload = parsed.get("get_price_data", {})
+        indicators = price_payload.get("indicators") or {}
+        momentum = price_payload.get("momentum") or {}
+        price = PriceSnapshot(
+            current_price=price_payload.get("current_price"),
+            week52_high=price_payload.get("week52_high"),
+            week52_low=price_payload.get("week52_low"),
+            pe_ratio=price_payload.get("pe_ratio"),
+            ytd_return_pct=price_payload.get("ytd_return_pct"),
+            sma_50=indicators.get("sma_50"),
+            sma_200=indicators.get("sma_200"),
+            rsi_14=indicators.get("rsi_14"),
+            macd_hist=indicators.get("macd_hist"),
+            momentum_signal=momentum.get("signal", "Unknown"),
+            momentum_flags=momentum.get("flags") or [],
         )
+
+        vol_payload = parsed.get("calculate_volatility")
+        volatility = None
+        if vol_payload:
+            volatility = VolatilityProfile(
+                window_days=vol_payload.get("window_days", 30),
+                annualised_volatility_pct=vol_payload.get("annualised_volatility_pct", 0.0),
+                annualised_volatility_1y_pct=vol_payload.get("annualised_volatility_1y_pct"),
+                mean_abs_daily_move_pct=vol_payload.get("mean_abs_daily_move_pct"),
+                regime=vol_payload.get("regime", "unknown"),
+            )
+
+        sent_payload = parsed.get("llm_sentiment_tool") or parsed.get("llm_sentiment")
+        sentiment = None
+        if sent_payload:
+            sentiment = SentimentSummary(
+                score=sent_payload.get("score", 0.0),
+                label=sent_payload.get("label", "neutral"),
+                positive=sent_payload.get("positive", 0),
+                negative=sent_payload.get("negative", 0),
+                neutral=sent_payload.get("neutral", 0),
+                mean_confidence=sent_payload.get("mean_confidence"),
+                classified=sent_payload.get("classified", 0),
+            )
+
+        figures = {
+            "price": price.model_dump(),
+            "volatility": volatility.model_dump() if volatility else None,
+            "sentiment": sentiment.model_dump() if sentiment else None,
+        }
+        narrative = BriefNarrative()
         try:
             with tracing.acting_as(AGENT_A):
-                return get_client().structured(
-                    prompts.AGENT_A_BRIEF_SYSTEM, user, DataBrief
+                narrative = get_client().structured(
+                    prompts.AGENT_A_BRIEF_SYSTEM,
+                    prompts.AGENT_A_BRIEF_USER.substitute(
+                        ticker=ticker,
+                        figures=json.dumps(figures, indent=2)[:3500],
+                        failures=chr(10).join(failures) or "none",
+                    ),
+                    BriefNarrative,
                 )
         except (SchemaValidationError, LLMError) as exc:
-            result.errors.append(f"brief compilation failed: {exc}")
-            return None
+            # The figures are already correct, so a failed narrative degrades the brief
+            # rather than voiding it.
+            result.errors.append(f"brief narrative failed: {exc}")
+
+        observations = narrative.quant_observations or self._derive_observations(
+            price, volatility, sentiment
+        )
+        gaps = list(narrative.data_gaps) + failures
+        if price.current_price is None:
+            gaps.append("current price unavailable")
+        if volatility is None:
+            gaps.append("volatility not measured")
+        if sentiment is None:
+            gaps.append("news sentiment not measured")
+
+        return DataBrief(
+            ticker=ticker,
+            company_name=price_payload.get("company_name", "") or ticker,
+            as_of=price_payload.get("as_of", ""),
+            price=price,
+            volatility=volatility,
+            sentiment=sentiment,
+            quant_observations=observations,
+            data_gaps=gaps,
+        )
 
     def run(self, ticker: str) -> PipelineResult:
         started = time.perf_counter()

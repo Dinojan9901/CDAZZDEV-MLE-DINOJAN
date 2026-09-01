@@ -29,10 +29,12 @@ def _strip_fence(text: str) -> str:
 class LLMClient:
     """Groq first, OpenRouter on failure. Both speak an OpenAI-shaped chat API."""
 
-    def __init__(self, temperature: float = 0.2, max_tokens: int = 1024):
+    def __init__(self, temperature: float = 0.2, max_tokens: int = 1024,
+                 model: str | None = None):
         config.require_llm_key()
         self.temperature = temperature
         self.max_tokens = max_tokens
+        self.model = model or config.GROQ_MODEL
         self.last_provider: str | None = None
         self._groq = None
         self._openrouter = None
@@ -74,7 +76,7 @@ class LLMClient:
     def chat(self, system: str, user: str, json_mode: bool = False) -> str:
         attempts = []
         if self._groq:
-            attempts.append(("groq", self._groq, config.GROQ_MODEL))
+            attempts.append(("groq", self._groq, self.model))
         if self._openrouter:
             attempts.append(("openrouter", self._openrouter, config.OPENROUTER_MODEL))
 

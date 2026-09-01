@@ -63,6 +63,23 @@ class DataBrief(BaseModel):
         return [normalise_prose(x) for x in v if x and x.strip()]
 
 
+class BriefNarrative(BaseModel):
+    """The only part of the handoff a model is allowed to write.
+
+    Numbers are parsed from tool output in Python. Asking a model to copy figures
+    across a boundary invites silent transcription errors, and a null is just the
+    quietest kind.
+    """
+
+    quant_observations: list[str] = Field(default_factory=list, max_length=8)
+    data_gaps: list[str] = Field(default_factory=list, max_length=6)
+
+    @field_validator("quant_observations", "data_gaps")
+    @classmethod
+    def _clean(cls, v):
+        return [normalise_prose(x) for x in v if x and x.strip()]
+
+
 class ClarificationRequest(BaseModel):
     """Agent B may raise exactly one of these back to Agent A."""
 

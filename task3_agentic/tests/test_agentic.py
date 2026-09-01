@@ -12,8 +12,10 @@ from langchain_core.messages import AIMessage
 from task3_agentic.src import multi_agent, tools as toolkit, trace as tracing
 from langchain_core.messages import HumanMessage, SystemMessage, ToolMessage
 from task3_agentic.src.agent import (
-    ResearchAgent, _is_rate_limit, _observation_gist, compact_context, estimate_tokens,
+    ResearchAgent, _is_oversized, _is_quota_exhausted, _is_rate_limit,
+    _observation_gist, compact_context, estimate_tokens,
 )
+from common.llm import LLMError
 from task3_agentic.src.memory import BriefCache, SessionMemory
 from task3_agentic.src.schemas import DataBrief, ResearchReport
 
@@ -387,11 +389,58 @@ def test_collapsed_payload_keeps_the_substance():
     return 1
 
 
-def test_rate_limit_detection():
-    assert _is_rate_limit(RuntimeError("Error code: 413 - rate_limit_exceeded"))
-    assert _is_rate_limit(RuntimeError("Request too large for model"))
+def test_oversized_and_quota_are_told_apart():
+    oversized = RuntimeError(
+        "413 - Request too large for model, please reduce your message size")
+    quota = RuntimeError(
+        "429 - Rate limit reached, tokens per day (TPD): Limit 200000, Used 198947")
+
+    # These need different responses. Compacting a request that was never too big just
+    # reported "context too large" at 707 tokens and then failed again.
+    assert _is_oversized(oversized) and not _is_quota_exhausted(oversized)
+    assert _is_quota_exhausted(quota) and not _is_oversized(quota)
+    assert _is_rate_limit(oversized) and _is_rate_limit(quota)
     assert not _is_rate_limit(RuntimeError("connection reset"))
+    return 6
+
+
+def test_quota_exhaustion_switches_provider_rather_than_compacting():
+    class Exhausted:
+        def invoke(self, messages):
+            raise RuntimeError("429 - Rate limit reached, tokens per day (TPD): Limit 200000")
+
+    class Fallback:
+        def __init__(self):
+            self.calls = 0
+
+        def invoke(self, messages):
+            self.calls += 1
+            return AIMessage(content="answered by the fallback provider")
+
+    fallback = Fallback()
+    agent = ResearchAgent(verbose=False, llm=FakeLLM([]))
+    agent._fallback_llm = lambda bind_tools: fallback
+
+    out = agent._call_model(Exhausted(), _history(2, 50))
+    assert out.content == "answered by the fallback provider"
+    assert fallback.calls == 1
+    assert agent.used_fallback is True
     return 3
+
+
+def test_quota_exhaustion_reraises_when_no_fallback_exists():
+    class Exhausted:
+        def invoke(self, messages):
+            raise RuntimeError("429 - tokens per day (TPD) limit reached")
+
+    agent = ResearchAgent(verbose=False, llm=FakeLLM([]))
+    agent._fallback_llm = lambda bind_tools: None
+    try:
+        agent._call_model(Exhausted(), _history(2, 50))
+        raise AssertionError("must not swallow the failure when nothing can serve it")
+    except RuntimeError:
+        pass
+    return 1
 
 
 def test_call_model_recovers_from_a_rate_limit_by_sending_less():
@@ -414,6 +463,179 @@ def test_call_model_recovers_from_a_rate_limit_by_sending_less():
     assert len(llm.payload_sizes) == 2
     assert llm.payload_sizes[1] < llm.payload_sizes[0], "the retry must send strictly less"
     return 3
+
+
+# --- deterministic handoff --------------------------------------------------
+
+PRICE_JSON = json.dumps({
+    "ok": True, "ticker": "NVDA", "company_name": "NVIDIA Corporation",
+    "as_of": "2026-09-02", "current_price": 216.7, "week52_high": 235.47,
+    "week52_low": 164.98, "pe_ratio": 27.6, "ytd_return_pct": 17.05,
+    "indicators": {"sma_50": 208.6, "sma_200": 195.8, "rsi_14": 54.6, "macd_hist": -0.28},
+    "momentum": {"signal": "Bullish", "flags": ["golden_cross"]},
+})
+VOL_JSON = json.dumps({
+    "ok": True, "window_days": 30, "annualised_volatility_pct": 44.96,
+    "annualised_volatility_1y_pct": 37.89, "mean_abs_daily_move_pct": 2.1,
+    "regime": "elevated",
+})
+SENT_JSON = json.dumps({
+    "ok": True, "score": 0.5707, "label": "positive", "positive": 6,
+    "negative": 1, "neutral": 3, "mean_confidence": 0.71, "classified": 10,
+})
+
+
+class _NarrativeClient:
+    def structured(self, system, user, schema, repair=True):
+        self.user = user
+        return schema.model_validate({
+            "quant_observations": ["Volatility is elevated against the one-year figure."],
+            "data_gaps": [],
+        })
+
+
+def test_parse_observations_separates_failures():
+    parsed, failures = multi_agent.TwoAgentPipeline._parse_observations({
+        "get_price_data": PRICE_JSON,
+        "calculate_volatility": json.dumps({"ok": False, "error": "delisted"}),
+        "broken": "not json at all",
+    })
+    assert set(parsed) == {"get_price_data"}
+    assert len(failures) == 2
+    assert any("delisted" in f for f in failures)
+    assert any("not valid JSON" in f for f in failures)
+    return 4
+
+
+def test_brief_figures_are_parsed_not_transcribed(monkey=None):
+    pipeline = multi_agent.TwoAgentPipeline.__new__(multi_agent.TwoAgentPipeline)
+    run = type("R", (), {"memory": SessionMemory()})()
+    run.memory.observations = {
+        "get_price_data": PRICE_JSON,
+        "calculate_volatility": VOL_JSON,
+        "llm_sentiment_tool": SENT_JSON,
+    }
+    result = multi_agent.PipelineResult(ticker="NVDA")
+
+    original = multi_agent.get_client
+    multi_agent.get_client = lambda: _NarrativeClient()
+    try:
+        brief = pipeline._compile_brief("NVDA", run, result)
+    finally:
+        multi_agent.get_client = original
+
+    # Every figure must match the tool payload exactly. A null here is the bug this
+    # test exists for: an LLM-transcribed brief once came back entirely empty.
+    assert brief.price.current_price == 216.7
+    assert brief.price.sma_50 == 208.6 and brief.price.rsi_14 == 54.6
+    assert brief.price.momentum_signal == "Bullish"
+    assert brief.volatility.annualised_volatility_pct == 44.96
+    assert brief.volatility.regime == "elevated"
+    assert brief.sentiment.score == 0.5707 and brief.sentiment.classified == 10
+    assert brief.company_name == "NVIDIA Corporation"
+    assert brief.quant_observations, "the narrative must still be attached"
+    return 9
+
+
+def test_brief_records_gaps_when_tools_fail():
+    pipeline = multi_agent.TwoAgentPipeline.__new__(multi_agent.TwoAgentPipeline)
+    run = type("R", (), {"memory": SessionMemory()})()
+    run.memory.observations = {"get_price_data": PRICE_JSON}
+    result = multi_agent.PipelineResult(ticker="NVDA")
+
+    original = multi_agent.get_client
+    multi_agent.get_client = lambda: _NarrativeClient()
+    try:
+        brief = pipeline._compile_brief("NVDA", run, result)
+    finally:
+        multi_agent.get_client = original
+
+    assert brief.volatility is None and brief.sentiment is None
+    gaps = " ".join(brief.data_gaps)
+    assert "volatility not measured" in gaps
+    assert "news sentiment not measured" in gaps
+    assert brief.price.current_price == 216.7, "what was gathered must survive"
+    return 5
+
+
+def test_brief_survives_a_failed_narrative_call():
+    class Failing:
+        def structured(self, *a, **k):
+            raise LLMError("provider down")
+
+    pipeline = multi_agent.TwoAgentPipeline.__new__(multi_agent.TwoAgentPipeline)
+    run = type("R", (), {"memory": SessionMemory()})()
+    run.memory.observations = {"get_price_data": PRICE_JSON, "calculate_volatility": VOL_JSON}
+    result = multi_agent.PipelineResult(ticker="NVDA")
+
+    original = multi_agent.get_client
+    multi_agent.get_client = lambda: Failing()
+    try:
+        brief = pipeline._compile_brief("NVDA", run, result)
+    finally:
+        multi_agent.get_client = original
+
+    # The numbers do not depend on the model, so they must survive its failure, and
+    # the observations fall back to facts derived from those same numbers.
+    assert brief.price.current_price == 216.7
+    assert brief.volatility.annualised_volatility_pct == 44.96
+    assert brief.quant_observations, "a failed narrative must not empty the handoff"
+    assert "44.96" in " ".join(brief.quant_observations)
+    assert any("narrative failed" in e for e in result.errors)
+    return 5
+
+
+class _EmptyNarrativeClient:
+    def structured(self, system, user, schema, repair=True):
+        return schema.model_validate({"quant_observations": [], "data_gaps": ["options data absent"]})
+
+
+def test_handoff_is_never_empty_even_if_the_model_returns_nothing():
+    pipeline = multi_agent.TwoAgentPipeline.__new__(multi_agent.TwoAgentPipeline)
+    run = type("R", (), {"memory": SessionMemory()})()
+    run.memory.observations = {
+        "get_price_data": PRICE_JSON,
+        "calculate_volatility": VOL_JSON,
+        "llm_sentiment_tool": SENT_JSON,
+    }
+    result = multi_agent.PipelineResult(ticker="NVDA")
+
+    original = multi_agent.get_client
+    multi_agent.get_client = lambda: _EmptyNarrativeClient()
+    try:
+        brief = pipeline._compile_brief("NVDA", run, result)
+    finally:
+        multi_agent.get_client = original
+
+    # An empty narrative must not produce an empty handoff.
+    assert brief.quant_observations, "observations must fall back to derived facts"
+    joined = " ".join(brief.quant_observations)
+    assert "golden cross" in joined, "the cross structure should be stated"
+    assert "44.96" in joined, "the measured volatility must appear"
+    assert "elevated" in joined
+    assert "positive" in joined, "sentiment label should be stated"
+    assert "options data absent" in " ".join(brief.data_gaps), "model gaps still kept"
+    return 6
+
+
+def test_derived_observations_are_checkable_against_the_figures():
+    from task3_agentic.src.schemas import PriceSnapshot, SentimentSummary, VolatilityProfile
+
+    price = PriceSnapshot(current_price=220.0, sma_50=210.0, sma_200=200.0,
+                          rsi_14=75.0, macd_hist=0.5, week52_high=240.0, week52_low=160.0)
+    vol = VolatilityProfile(window_days=30, annualised_volatility_pct=40.0,
+                            annualised_volatility_1y_pct=20.0, regime="elevated")
+    sent = SentimentSummary(score=-0.4, label="negative", positive=1, negative=6,
+                            neutral=3, classified=10)
+    notes = multi_agent.TwoAgentPipeline._derive_observations(price, vol, sent)
+    joined = " ".join(notes)
+
+    assert "overbought" in joined, "RSI 75 must read as overbought"
+    assert "2.00x" in joined, "the volatility ratio must be computed, not asserted"
+    assert "negative" in joined
+    assert "75%" in joined, "220 of a 160-240 range is 75%"
+    assert len(notes) <= 6
+    return 5
 
 
 class _StubTool:
@@ -459,8 +681,16 @@ def main():
         test_large_history_collapses_older_tool_payloads,
         test_compaction_preserves_tool_call_id_pairing,
         test_collapsed_payload_keeps_the_substance,
-        test_rate_limit_detection,
+        test_oversized_and_quota_are_told_apart,
+        test_quota_exhaustion_switches_provider_rather_than_compacting,
+        test_quota_exhaustion_reraises_when_no_fallback_exists,
         test_call_model_recovers_from_a_rate_limit_by_sending_less,
+        test_parse_observations_separates_failures,
+        test_brief_figures_are_parsed_not_transcribed,
+        test_brief_records_gaps_when_tools_fail,
+        test_brief_survives_a_failed_narrative_call,
+        test_handoff_is_never_empty_even_if_the_model_returns_nothing,
+        test_derived_observations_are_checkable_against_the_figures,
     ]
     total = 0
     for check in checks:

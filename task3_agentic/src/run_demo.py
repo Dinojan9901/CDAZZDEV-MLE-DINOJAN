@@ -58,14 +58,21 @@ def run_3a(ticker: str, tracer) -> tuple:
 
 def run_3c_short_term(researcher, run, ticker: str) -> int:
     banner("TASK 3C  short-term memory: follow-up answered from session context")
-    before = len(researcher.by_name) and 0
     question = (f"What was the 30-day annualised volatility figure you already retrieved "
                 f"for {ticker}, and what regime did it indicate? Answer from what you "
                 f"have already gathered.")
     answer, new_calls = researcher.ask(run, question)
-    print(f"\nnew tool calls required: {new_calls}")
-    print("PASS: answered from session context" if new_calls == 0
-          else "NOTE: the agent chose to re-fetch")
+    if new_calls < 0:
+        print()
+        print("INCONCLUSIVE: the follow-up call itself failed, memory not exercised")
+    elif new_calls == 0:
+        print()
+        print("new tool calls required: 0")
+        print("PASS: answered from session context without re-calling any tool")
+    else:
+        print()
+        print(f"new tool calls required: {new_calls}")
+        print("NOTE: the agent chose to re-fetch rather than use context")
     return new_calls
 
 

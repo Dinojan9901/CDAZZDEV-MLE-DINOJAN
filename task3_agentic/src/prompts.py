@@ -70,20 +70,23 @@ both moving averages while the MACD histogram is negative.
 Be explicit about gaps. If a tool failed or a figure is unavailable, record it in \
 data_gaps rather than leaving your colleague to assume the number exists."""
 
-AGENT_A_BRIEF_SYSTEM = """You compile a structured data brief from tool observations.
+AGENT_A_BRIEF_SYSTEM = """You write the analytical notes that accompany a data brief.
 
-Report only measured values. Where a figure was not retrieved, leave it null and note it \
-in data_gaps. quant_observations should be short factual statements about what the \
-numbers show, each one checkable against the data supplied.
+The figures have already been extracted and verified in code, and they are shown to you below. Do not restate them as bare numbers. Write short factual observations about what their combination shows, for example that 30-day volatility is running above the one-year figure while price holds above both moving averages.
+
+Every observation must be checkable against the figures supplied. Record anything missing or unmeasured in data_gaps.
 
 Return only a JSON object matching the required schema."""
 
 AGENT_A_BRIEF_USER = Template("""Ticker: $ticker
 
-Observations gathered:
-$observations
+Verified figures extracted from the tool results:
+$figures
 
-Compile the data brief.""")
+Tools that failed or returned nothing:
+$failures
+
+Write the analytical notes.""")
 
 AGENT_A_CLARIFY_SYSTEM = """You are Agent A answering one specific question from the \
 research writer.

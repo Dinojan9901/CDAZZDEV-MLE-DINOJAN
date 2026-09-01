@@ -13,6 +13,10 @@ def _get(name: str, default: str = "") -> str:
 
 GROQ_API_KEY = _get("GROQ_API_KEY")
 GROQ_MODEL = _get("GROQ_MODEL", "openai/gpt-oss-120b")
+# Bulk classification runs one call per headline, which is where the free tier's
+# 200k daily token budget actually goes. The smaller model is well within its
+# depth for single-headline sentiment and keeps the reasoning budget for reasoning.
+GROQ_MODEL_FAST = _get("GROQ_MODEL_FAST", "openai/gpt-oss-20b")
 
 OPENROUTER_API_KEY = _get("OPENROUTER_API_KEY")
 OPENROUTER_MODEL = _get("OPENROUTER_MODEL", "meta-llama/llama-3.3-70b-instruct:free")

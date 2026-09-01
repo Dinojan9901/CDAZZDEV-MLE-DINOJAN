@@ -125,9 +125,29 @@ def compact_context(messages, budget: int = CONTEXT_CHAR_BUDGET,
     return out
 
 
-def _is_rate_limit(exc: Exception) -> bool:
+def _is_oversized(exc: Exception) -> bool:
+    """Request exceeded the per-request size ceiling. Sending less actually helps."""
     text = str(exc).lower()
-    return "rate_limit" in text or "too large" in text or "413" in text
+    return "too large" in text or "413" in text or "reduce your message size" in text
+
+
+def _is_quota_exhausted(exc: Exception) -> bool:
+    """Daily or per-minute allowance is spent.
+
+    Compacting the payload does nothing here, which is the distinction that matters:
+    an earlier version treated both cases the same and kept shrinking a request that
+    was never too big, reporting "context too large" at 707 tokens.
+    """
+    text = str(exc).lower()
+    if _is_oversized(exc):
+        return False
+    return "429" in text or "tokens per day" in text or "tpd" in text or (
+        "rate limit" in text or "rate_limit" in text
+    )
+
+
+def _is_rate_limit(exc: Exception) -> bool:
+    return _is_oversized(exc) or _is_quota_exhausted(exc)
 
 
 class ResearchAgent:
@@ -143,6 +163,7 @@ class ResearchAgent:
         self.by_name = {t.name: t for t in self.tools}
         self.llm_model = model or config.GROQ_MODEL
         self.temperature = temperature
+        self.used_fallback = False
         # llm is injectable so the loop can be tested without a key or a network call.
         self.llm = llm or ChatGroq(
             model=self.llm_model,
@@ -159,26 +180,53 @@ class ResearchAgent:
         if self.verbose:
             print(text)
 
-    def _call_model(self, llm, messages, run=None):
-        """Invoke with a budgeted context, shrinking further if the provider says no.
+    def _fallback_llm(self, bind_tools: bool):
+        """A second provider for the agent loop.
 
-        A 413 is not transient, so retrying the same payload just fails again. The only
-        useful response is to send less, and a compacted history still carries the
-        substance of what was observed.
+        common/llm.py already fails over for structured calls, but the reasoning loop
+        talks to ChatGroq directly, so exhausting the Groq quota used to kill the agent
+        outright while a perfectly good fallback sat unused.
         """
+        if not config.OPENROUTER_API_KEY:
+            return None
+        from langchain_openai import ChatOpenAI
+
+        llm = ChatOpenAI(
+            model=config.OPENROUTER_MODEL,
+            api_key=config.OPENROUTER_API_KEY,
+            base_url=config.OPENROUTER_BASE_URL,
+            temperature=self.temperature,
+            max_tokens=2048,
+        )
+        return llm.bind_tools(self.tools) if bind_tools else llm
+
+    def _call_model(self, llm, messages, run=None, bind_tools: bool = True):
+        """Invoke, then respond to failure according to what actually failed."""
         payload = compact_context(messages)
         try:
             return llm.invoke(payload)
         except Exception as exc:
-            if not _is_rate_limit(exc):
+            oversized = _is_oversized(exc)
+            exhausted = _is_quota_exhausted(exc)
+            if not (oversized or exhausted):
                 raise
-            self._say(f"          [context too large at ~{estimate_tokens(payload)} tokens, "
-                      f"compacting harder]")
             if run is not None:
-                run.provider_errors.append(f"rate_limit, compacted: {str(exc)[:160]}")
-            payload = compact_context(messages, budget=0, keep_full=1)
-            time.sleep(2)
-            return llm.invoke(payload)
+                run.provider_errors.append(f"{'oversized' if oversized else 'quota'}: {str(exc)[:160]}")
+
+            if oversized:
+                self._say(f"          [request too large at ~{estimate_tokens(payload)} "
+                          f"tokens, compacting and retrying]")
+                time.sleep(1)
+                return llm.invoke(compact_context(messages, budget=0, keep_full=1))
+
+            fallback = self._fallback_llm(bind_tools)
+            if fallback is None:
+                self._say("          [provider quota exhausted and no fallback configured]")
+                raise
+            self._say(f"          [Groq quota exhausted, switching to "
+                      f"{config.OPENROUTER_MODEL}]")
+            self.used_fallback = True
+            return fallback.invoke(payload)
 
     def _invoke_tool(self, call: dict) -> str:
         name = call["name"]
@@ -271,7 +319,8 @@ class ResearchAgent:
                     "have already gathered, and name anything you could not verify."
                 ))
                 try:
-                    closing = self._call_model(self._plain_llm(), run.memory.messages, run)
+                    closing = self._call_model(self._plain_llm(), run.memory.messages, run,
+                                               bind_tools=False)
                     run.memory.add_message(closing)
                     run.final_text = (closing.content or "").strip()
                 except Exception as exc:

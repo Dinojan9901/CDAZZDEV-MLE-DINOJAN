@@ -9,6 +9,7 @@ score toward zero and hide the problem.
 import logging
 from dataclasses import dataclass, field
 
+from common import config
 from common.llm import LLMError, SchemaValidationError, get_client
 from common.schemas import AggregateSentiment, HeadlineSentiment, TradingSignal
 from task1_financial.src import prompts
@@ -57,7 +58,9 @@ def classify_headline(entry: dict, ticker: str, company: str, client) -> Headlin
 def analyse_headlines(
     headlines: list[dict], ticker: str, company: str, client=None
 ) -> SentimentOutcome:
-    client = client or get_client()
+    # One call per headline is what the brief asks for, and it is also the single
+    # largest consumer of the daily token budget, so it runs on the smaller model.
+    client = client or get_client(model=config.GROQ_MODEL_FAST)
     outcome = SentimentOutcome()
 
     for entry in headlines:
