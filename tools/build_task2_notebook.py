@@ -224,12 +224,20 @@ bnb_config = BitsAndBytesConfig(
 # config.rope_scaling["type"] where the modern config uses "rope_type", which raises
 # KeyError: 'type' during rope init. Loading remote code also silently overrides a
 # working built-in implementation with an older one.
-model = AutoModelForCausalLM.from_pretrained(
-    BASE_MODEL,
-    quantization_config=bnb_config,
-    device_map={"": 0},
-    attn_implementation="eager",   # flash-attn is not available on a T4
-)
+# dtype must be pinned. transformers 5.x defaults unspecified dtype to bfloat16,
+# which leaves norms, embeddings and LoRA in bf16 while fp16=True runs a GradScaler
+# that cannot unscale bf16 grads:
+#   NotImplementedError: _amp_foreach_non_finite_check_and_unscale_cuda for BFloat16
+try:
+    model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL, quantization_config=bnb_config, device_map={"": 0},
+        attn_implementation="eager", dtype=torch.float16,
+    )
+except TypeError:                        # older transformers spells it torch_dtype
+    model = AutoModelForCausalLM.from_pretrained(
+        BASE_MODEL, quantization_config=bnb_config, device_map={"": 0},
+        attn_implementation="eager", torch_dtype=torch.float16,
+    )
 model.config.use_cache = False          # incompatible with gradient checkpointing
 
 print(f"loaded in {model.dtype}, {model.num_parameters()/1e9:.2f}B params")
@@ -295,71 +303,97 @@ def to_text(rows):
 train_ds, val_ds = to_text(splits["train"]), to_text(splits["val"])
 print(train_ds, val_ds, sep="\\n")
 """),
+    md("""
+### Choosing the epoch count from evidence
+
+A 3-epoch run was executed first. Validation loss reached its minimum at epoch 2 and
+rose again at epoch 3 while training loss kept falling, which is overfitting on 96
+training examples:
+
+| epoch | train loss | val loss |
+|---|---|---|
+| 1 | 0.6559 | 0.6278 |
+| 2 | 0.5365 | 0.5989 |
+| 3 | 0.3914 | 0.6069 |
+
+`num_train_epochs` is therefore 2, chosen on measurement rather than by default, and
+`load_best_model_at_end` guards it by restoring the lowest-validation checkpoint.
+
+### Why transformers.Trainer rather than trl.SFTTrainer
+
+trl 1.12 routes PEFT models through a chunked cross-entropy path that expects
+`last_hidden_state` and receives `CausalLMOutputWithPast`, raising `AttributeError`
+mid-training. Constructing `SFTTrainer` also patches the model in place, so the failure
+survives into any later attempt until the model is rebuilt.
+
+`transformers.Trainer` uses the stable API underneath and removes a fast-moving
+dependency from the failure surface. The recipe is unchanged, and prompt masking is
+implemented directly below, which is the behaviour `SFTTrainer` would have provided.
+"""),
     code("""
-import dataclasses, inspect, math, trl
-from trl import SFTConfig, SFTTrainer
+import math
+from transformers import TrainingArguments, Trainer, DataCollatorForSeq2Seq
 
-# trl renames these fields between releases. Ask the installed version what it accepts
-# rather than hardcoding names: 1.12 dropped warmup_ratio, max_seq_length and
-# evaluation_strategy in favour of warmup_steps, max_length and eval_strategy.
-try:
-    ACCEPTED = {f.name for f in dataclasses.fields(SFTConfig)}
-except TypeError:
-    ACCEPTED = set(inspect.signature(SFTConfig.__init__).parameters) - {"self", "kwargs"}
+ASSISTANT_TAG = "<|assistant|>"
 
-OUT_DIR = "/content/task2_out"
+def encode(rows):
+    \"\"\"Tokenise and mask the prompt so loss is computed on the answer only.\"\"\"
+    feats = []
+    for r in rows:
+        full = tokenizer.apply_chat_template(r["messages"], tokenize=False)
+        cut = full.rfind(ASSISTANT_TAG)
+        prompt = full[:cut + len(ASSISTANT_TAG)] if cut != -1 else full
+
+        ids = tokenizer(full, truncation=True, max_length=MAX_SEQ_LEN)["input_ids"]
+        n_prompt = len(tokenizer(prompt, truncation=True, max_length=MAX_SEQ_LEN)["input_ids"])
+
+        labels = list(ids)
+        labels[:n_prompt] = [-100] * min(n_prompt, len(labels))
+        feats.append({"input_ids": ids, "attention_mask": [1] * len(ids), "labels": labels})
+    return feats
+
+train_feats, val_feats = encode(splits["train"]), encode(splits["val"])
+supervised = sum(1 for t in train_feats[0]["labels"] if t != -100)
+print(f"example 1: {len(train_feats[0]['input_ids'])} tokens, {supervised} supervised")
+
+EPOCHS = 2
 EFFECTIVE_ACCUM = 4
-steps_per_epoch = math.ceil(len(train_ds) / (1 * EFFECTIVE_ACCUM))
-total_steps = steps_per_epoch * 3
+steps_per_epoch = math.ceil(len(train_feats) / EFFECTIVE_ACCUM)
+total_steps = steps_per_epoch * EPOCHS
 warmup = max(3, round(total_steps * 0.08))
 print(f"{steps_per_epoch} steps/epoch, {total_steps} total, {warmup} warmup")
 
-wanted = {
-    "output_dir": OUT_DIR,
-    "num_train_epochs": 3,
-    "per_device_train_batch_size": 1,
-    "per_device_eval_batch_size": 1,
-    "gradient_accumulation_steps": EFFECTIVE_ACCUM,
-    "learning_rate": 2e-4,
-    "lr_scheduler_type": "cosine",
-    "warmup_ratio": 0.08,
-    "warmup_steps": warmup,
-    "optim": "paged_adamw_8bit",
-    "fp16": True,
-    "gradient_checkpointing": True,
-    "gradient_checkpointing_kwargs": {"use_reentrant": False},
-    "max_length": MAX_SEQ_LEN,
-    "max_seq_length": MAX_SEQ_LEN,
-    "packing": False,
-    "logging_steps": 5,
-    "eval_strategy": "epoch",
-    "evaluation_strategy": "epoch",
-    "save_strategy": "epoch",
-    "save_total_limit": 2,
-    "report_to": "none",
-    "seed": 42,
-}
-for a, b in [("warmup_ratio", "warmup_steps"), ("max_length", "max_seq_length"),
-             ("eval_strategy", "evaluation_strategy")]:
-    if a in ACCEPTED and b in ACCEPTED:
-        wanted.pop(b)
+args = TrainingArguments(
+    output_dir="/content/task2_out",
+    num_train_epochs=EPOCHS,
+    per_device_train_batch_size=1,
+    per_device_eval_batch_size=1,
+    gradient_accumulation_steps=EFFECTIVE_ACCUM,
+    learning_rate=2e-4,
+    lr_scheduler_type="cosine",
+    warmup_steps=warmup,
+    optim="paged_adamw_8bit",
+    fp16=True,
+    gradient_checkpointing=True,
+    gradient_checkpointing_kwargs={"use_reentrant": False},
+    logging_steps=5,
+    eval_strategy="epoch",
+    save_strategy="epoch",
+    save_total_limit=2,
+    load_best_model_at_end=True,
+    metric_for_best_model="eval_loss",
+    greater_is_better=False,
+    report_to="none",
+    seed=42,
+    remove_unused_columns=False,
+)
 
-applied = {k: v for k, v in wanted.items() if k in ACCEPTED}
-dropped = sorted(set(wanted) - set(applied))
-print()
-print(f"trl {trl.__version__}: applied {len(applied)} settings")
-if dropped:
-    print(f"not supported by this trl, dropped: {dropped}")
-
-sft_config = SFTConfig(**applied)
-try:
-    trainer = SFTTrainer(model=model, args=sft_config, train_dataset=train_ds,
-                         eval_dataset=val_ds, processing_class=tokenizer)
-except TypeError:
-    trainer = SFTTrainer(model=model, args=sft_config, train_dataset=train_ds,
-                         eval_dataset=val_ds, tokenizer=tokenizer)
-
-print("trainer ready, effective batch size", 1 * EFFECTIVE_ACCUM)
+trainer = Trainer(
+    model=model, args=args,
+    train_dataset=train_feats, eval_dataset=val_feats,
+    data_collator=DataCollatorForSeq2Seq(tokenizer, padding=True, label_pad_token_id=-100),
+)
+print("trainer ready (transformers.Trainer), epochs", EPOCHS)
 """),
 
     md("""
@@ -451,10 +485,17 @@ import gc; gc.collect(); torch.cuda.empty_cache()
 print(f"GPU freed, now {torch.cuda.memory_allocated()/1e9:.2f} GB allocated")
 """),
     code("""
+# PEFT's torchao dispatcher raises on an old torchao instead of returning False.
+# Colab ships 0.10.0 while PEFT 0.20 wants 0.16+. We quantise with bitsandbytes, so
+# this dispatcher is never reached; neutralise the probe rather than reinstall.
+import peft.import_utils, peft.tuners.lora.torchao
+peft.import_utils.is_torchao_available = lambda: False
+peft.tuners.lora.torchao.is_torchao_available = lambda: False
+
 from peft import PeftModel
 
 base = AutoModelForCausalLM.from_pretrained(
-    BASE_MODEL, torch_dtype=torch.float16, device_map={"": 0},
+    BASE_MODEL, dtype=torch.float16, device_map={"": 0},
 )
 merged = PeftModel.from_pretrained(base, adapter_dir)
 merged = merged.merge_and_unload()
@@ -470,9 +511,15 @@ print("merged model saved to", MERGED_DIR)
 from huggingface_hub import HfApi, create_repo
 
 HF_REPO_ID = "{HF_REPO}"
-create_repo(HF_REPO_ID, exist_ok=True, private=False, token=os.environ["HF_TOKEN"])
-merged.push_to_hub(HF_REPO_ID, token=os.environ["HF_TOKEN"], safe_serialization=True)
-tokenizer.push_to_hub(HF_REPO_ID, token=os.environ["HF_TOKEN"])
+token = os.environ["HF_TOKEN"]
+create_repo(HF_REPO_ID, exist_ok=True, private=False, token=token)
+
+# upload_folder sends the files already on disk. push_to_hub re-serialises from
+# memory, which risks a second OOM, and it dropped safe_serialization in this version.
+HfApi().upload_folder(
+    folder_path=MERGED_DIR, repo_id=HF_REPO_ID, repo_type="model", token=token,
+    commit_message="QLoRA fine-tuned Phi-3-mini for financial risk clause extraction",
+)
 print(f"pushed to https://huggingface.co/{{HF_REPO_ID}}")
 """),
 
